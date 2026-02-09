@@ -9,18 +9,30 @@
     "name": "turtir-ai",
     "email": "turtirhey@gmail.com"
   },
-  "plugins": [
-    {
-      "name": "nexus-core",
-      "description": "Deterministic quality-first hook pipeline: quality gate + rollback + incidents/fix queue + task metrics + pattern learning",
-      "version": "0.2.1",
-      "author": {
-        "name": "turtir-ai",
-        "email": "turtirhey@gmail.com"
-      },
-      "source": "./plugins/nexus-core",
-      "category": "development",
-      "strict": false
-    }
-  ]
+    "plugins": [
+        {
+            "name": "nexus-core",
+            "description": "Deterministic quality-first hook pipeline: quality gate + rollback + incidents/fix queue + task metrics + pattern learning",
+            "version": "0.2.1",
+            "author": {
+                "name": "turtir-ai",
+                "email": "turtirhey@gmail.com"
+            },
+            "source": "./plugins/nexus-core",
+            "category": "development",
+            "strict": false
+        },
+        {
+            "name": "nexus-memory-pack",
+            "description": "Compact hot memory + searchable cold memory: pinned.md + notes.jsonl + memory_bank rotation/archives",
+            "version": "0.1.1",
+            "author": {
+                "name": "turtir-ai",
+                "email": "turtirhey@gmail.com"
+            },
+            "source": "./plugins/nexus-memory-pack",
+            "category": "development",
+            "strict": false
+        }
+    ]
 }

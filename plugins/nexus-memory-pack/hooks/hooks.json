@@ -1,0 +1,16 @@
+{
+  "description": "NEXUS memory hooks: keep memory_bank compact + searchable (rotate on SessionEnd)",
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/nexus_mem.py rotate >/dev/null 2>&1 || true"
+          }
+        ]
+      }
+    ]
+  }
+}
+

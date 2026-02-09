@@ -14,6 +14,9 @@ claude plugin marketplace add "$ROOT" >/dev/null 2>&1 || true
 echo "[nexus-hub] installing nexus-core@turtir-ai (ok if already installed)..."
 claude plugin install nexus-core@turtir-ai >/dev/null 2>&1 || true
 
+echo "[nexus-hub] installing nexus-memory-pack@turtir-ai (ok if already installed)..."
+claude plugin install nexus-memory-pack@turtir-ai >/dev/null 2>&1 || true
+
 echo "[nexus-hub] installed plugins:"
 claude plugin list
 
@@ -25,4 +28,3 @@ Next:
    - plugin-only (recommended): jq '.hooks = {}' ~/.claude/settings.json > ~/.claude/settings.json.tmp && mv ~/.claude/settings.json.tmp ~/.claude/settings.json
 
 TXT
-
