@@ -1,0 +1,26 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "turtir-ai",
+  "description": "Turtir AI Claude Code plugin marketplace (NEXUS core + future skill packs)",
+  "metadata": {
+    "description": "Local marketplace for installing NEXUS core and future skill/MCP packs on any machine."
+  },
+  "owner": {
+    "name": "turtir-ai",
+    "email": "turtirhey@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "nexus-core",
+      "description": "Deterministic quality-first hook pipeline: quality gate + rollback + incidents/fix queue + task metrics + pattern learning",
+      "version": "0.2.0",
+      "author": {
+        "name": "turtir-ai",
+        "email": "turtirhey@gmail.com"
+      },
+      "source": "./plugins/nexus-core",
+      "category": "development",
+      "strict": false
+    }
+  ]
+}
