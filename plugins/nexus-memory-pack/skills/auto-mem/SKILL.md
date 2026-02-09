@@ -56,3 +56,13 @@ mkdir -p ./.claude/memory
 echo "### [LEARNING] ($(date +%F))" >> ./.claude/memory/MEMORY.md
 echo "- **Detay:** ..." >> ./.claude/memory/MEMORY.md
 ```
+
+## Hook Tabanli Otomatik Notlar
+
+Claude Code PostToolUse hook'lari ile "tool fail" olaylari otomatik olarak `notes.jsonl` icine yazilabilir:
+
+```bash
+python3 ~/.claude/nexus_mem.py remember-hook --no-rebuild
+```
+
+Bu, sadece hata/exit_code != 0 gibi durumlarda kisa bir `tool_error` notu ekler (memory_bank sismez).

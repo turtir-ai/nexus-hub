@@ -61,3 +61,15 @@ python3 ~/.claude/nexus_mem.py remember --scope global --category learning --tag
 # Project memory (cold): keep details inside the repo
 python3 ~/.claude/nexus_mem.py remember --scope project --category learning --tags "bugfix" --refs "src/app.py" "Detailed notes for this repo"
 ```
+
+## Portable Memory (Export/Import)
+
+Move memory to another computer without bloating the hot memory bank:
+
+```bash
+# Export a bundle (tar.gz)
+python3 ~/.claude/nexus_mem.py export --out ~/Downloads/nexus_memory.tar.gz
+
+# Import on another machine (merges notes; overwrites pinned if requested)
+python3 ~/.claude/nexus_mem.py import --overwrite-pinned ~/Downloads/nexus_memory.tar.gz
+```

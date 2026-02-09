@@ -15,11 +15,16 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +34,19 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 DEFAULT_MAX_BYTES = 40_000  # aligns with Claude Code warning threshold
 DEFAULT_PINNED_MAX_BYTES = 8_000
 DEFAULT_RECENT_NOTES = 12
+DEFAULT_STDIN_MAX_BYTES = 5_000_000
+
+SENSITIVE_SUBSTRINGS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "API_KEY",
+    "AUTH_TOKEN",
+    "Authorization:",
+    "Bearer ",
+    "sk-",
+    "xai-",
+    "AIza",
+)
 
 
 def now_iso() -> str:
@@ -165,6 +183,414 @@ def append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+
+def read_stdin_json(max_bytes: int = DEFAULT_STDIN_MAX_BYTES) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Best-effort read + parse stdin JSON.
+    Never raises; returns (event_or_none, meta).
+    """
+    meta: Dict[str, Any] = {"ok": True, "bytes": 0, "truncated": False}
+    try:
+        data = sys.stdin.buffer.read(max_bytes + 1)
+    except Exception as e:
+        meta.update({"ok": False, "error": f"stdin_read_failed:{type(e).__name__}", "detail": str(e)})
+        return None, meta
+
+    if not data:
+        meta.update({"bytes": 0})
+        return None, meta
+
+    if len(data) > max_bytes:
+        data = data[:max_bytes]
+        meta["truncated"] = True
+
+    meta["bytes"] = len(data)
+    try:
+        text = data.decode("utf-8", errors="replace")
+        obj = json.loads(text)
+    except Exception as e:
+        meta.update({"ok": False, "error": f"stdin_json_parse_failed:{type(e).__name__}", "detail": str(e)})
+        return None, meta
+
+    if not isinstance(obj, dict):
+        meta.update({"ok": False, "error": "stdin_json_not_object"})
+        return None, meta
+
+    return obj, meta
+
+
+def redact_sensitive(text: str) -> str:
+    # Fast path: avoid regex work for most strings.
+    if not any(s in text for s in SENSITIVE_SUBSTRINGS):
+        return text
+
+    redacted = text
+    # Authorization: Bearer <token>
+    redacted = re.sub(r"(?i)(authorization:\s*bearer)\s+[^\s]+", r"\1 [REDACTED]", redacted)
+    # KEY=VALUE style (best-effort)
+    redacted = re.sub(r"(?i)\b([A-Z0-9_]*API[_-]?KEY|AUTH[_-]?TOKEN)\b\s*=\s*([^\s]+)", r"\1=[REDACTED]", redacted)
+    # Bearer tokens in URLs/headers
+    redacted = re.sub(r"(?i)\bbearer\s+[^\s]+", "Bearer [REDACTED]", redacted)
+    # OpenAI-like tokens (sk-...)
+    redacted = re.sub(r"\bsk-[A-Za-z0-9]{10,}\b", "sk-[REDACTED]", redacted)
+    return redacted
+
+
+def short_one_line(text: str, limit: int = 360) -> str:
+    s = (text or "").strip().replace("\r", " ").replace("\n", " ")
+    s = redact_sensitive(s)
+    if len(s) <= limit:
+        return s
+    return s[: limit - 3] + "..."
+
+
+def coerce_str(x: Any) -> str:
+    if x is None:
+        return ""
+    if isinstance(x, str):
+        return x
+    try:
+        return json.dumps(x, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(x)
+
+
+def extract_failure_info(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    tool_name = str(event.get("tool_name") or event.get("name") or "").strip()
+    resp = event.get("tool_response")
+    if isinstance(resp, dict):
+        exit_code = resp.get("exit_code")
+        success = resp.get("success")
+        error = resp.get("error") or resp.get("exception")
+        stderr = resp.get("stderr")
+        stdout = resp.get("stdout")
+
+        failed = False
+        if isinstance(exit_code, int) and exit_code != 0:
+            failed = True
+        if isinstance(success, bool) and success is False:
+            failed = True
+        if error:
+            failed = True
+
+        if not failed:
+            return None
+
+        return {
+            "tool_name": tool_name,
+            "exit_code": exit_code if isinstance(exit_code, int) else None,
+            "success": success if isinstance(success, bool) else None,
+            "error": short_one_line(coerce_str(error), limit=220) if error else "",
+            "stderr": short_one_line(stderr or "", limit=220),
+            "stdout": short_one_line(stdout or "", limit=220),
+        }
+
+    # String response: best-effort heuristics.
+    s = coerce_str(resp)
+    if not s.strip():
+        return None
+    if any(tok in s for tok in ("Traceback (most recent call last)", "SyntaxError", "NameError", "ImportError", "Error:", "Exception")):
+        return {"tool_name": tool_name, "exit_code": None, "success": None, "error": short_one_line(s, limit=220), "stderr": "", "stdout": ""}
+    return None
+
+
+def remember_from_hook(
+    paths: MemoryPaths,
+    event: Dict[str, Any],
+    additional_tags: Sequence[str],
+    scope: str,
+    recent_notes: int,
+    rebuild: bool,
+) -> Dict[str, Any]:
+    ensure_dirs(paths)
+    ensure_pinned(paths)
+
+    info = extract_failure_info(event)
+    if not info:
+        return {"ok": True, "action": "noop", "reason": "no_failure_detected", "timestamp": now_iso()}
+
+    tool_name = info.get("tool_name") or "tool"
+    cwd = str(event.get("cwd") or event.get("project_root") or Path.cwd())
+
+    # Best-effort input summary without leaking secrets.
+    tool_input = event.get("tool_input")
+    if isinstance(tool_input, dict):
+        for k in ("cmd", "command", "path", "file_path", "target", "args"):
+            if k in tool_input:
+                tool_input = {k: tool_input.get(k)}
+                break
+    input_summary = short_one_line(coerce_str(tool_input), limit=260)
+
+    parts = [f"Tool {tool_name} failed in `{cwd}`."]
+    if input_summary:
+        parts.append(f"input={input_summary}")
+    if info.get("exit_code") is not None:
+        parts.append(f"exit_code={info['exit_code']}")
+    if info.get("error"):
+        parts.append(f"error={info['error']}")
+    if info.get("stderr"):
+        parts.append(f"stderr={info['stderr']}")
+
+    text = " ".join(parts).strip()
+    tags = ["tool_error", tool_name] + [t.strip().lstrip("#") for t in additional_tags if t and t.strip()]
+    refs: List[str] = []
+
+    note = {
+        "id": hashlib.md5(f"tool_error:{tool_name}:{text}".encode("utf-8", errors="replace")).hexdigest()[:12],
+        "ts": now_iso(),
+        "category": "tool_error",
+        "text": text,
+        "tags": tags,
+        "refs": refs,
+        "scope": scope,
+        "cwd": cwd,
+        "meta": {
+            "tool_name": tool_name,
+            "exit_code": info.get("exit_code"),
+            "success": info.get("success"),
+        },
+    }
+
+    append_jsonl(paths.notes_jsonl, note)
+
+    rebuilt = rebuild_memory_bank(paths, recent_notes=recent_notes) if rebuild else None
+    return {
+        "ok": True,
+        "action": "remember-hook",
+        "note": note,
+        "rebuilt": rebuilt,
+        "timestamp": now_iso(),
+    }
+
+
+def tar_safe_members(tf: tarfile.TarFile) -> List[tarfile.TarInfo]:
+    safe: List[tarfile.TarInfo] = []
+    for m in tf.getmembers():
+        name = m.name
+        if not name or name.startswith("/") or name.startswith("\\"):
+            continue
+        # Prevent path traversal
+        if ".." in Path(name).parts:
+            continue
+        safe.append(m)
+    return safe
+
+
+def export_bundle(
+    paths: MemoryPaths,
+    out_path: Path,
+    with_archives: bool,
+    with_state: bool,
+    recent_notes: int,
+) -> Dict[str, Any]:
+    ensure_dirs(paths)
+    ensure_pinned(paths)
+    rebuild_memory_bank(paths, recent_notes=recent_notes)
+
+    out_path = out_path.expanduser().resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    files: List[Path] = []
+    for p in (paths.memory_bank, paths.pinned, paths.notes_jsonl, paths.archives_index):
+        if p.exists() and p.is_file():
+            files.append(p)
+
+    if with_archives and paths.archives_dir.exists():
+        snaps = sorted([p for p in paths.archives_dir.glob("memory_bank_*.md") if p.is_file()])
+        files.extend(snaps)
+
+    if with_state:
+        state_dir = paths.claude_dir / "state"
+        candidates = [
+            "learning_patterns.json",
+            "incidents.jsonl",
+            "fix_queue.jsonl",
+            "tasks.jsonl",
+            "session_history.jsonl",
+            "performance_metrics.json",
+        ]
+        for rel in candidates:
+            p = state_dir / rel
+            if p.exists() and p.is_file():
+                files.append(p)
+
+    # De-dup while preserving order
+    uniq: List[Path] = []
+    seen: set[str] = set()
+    for p in files:
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(p)
+    files = uniq
+
+    manifest: Dict[str, Any] = {
+        "ok": True,
+        "kind": "nexus_mem_bundle",
+        "created_at": now_iso(),
+        "host": {
+            "platform": platform.platform(),
+            "python": sys.version.split()[0],
+        },
+        "claude_dir": str(paths.claude_dir),
+        "with_archives": with_archives,
+        "with_state": with_state,
+        "files": [],
+    }
+
+    # Build tar.gz with relative arcnames.
+    try:
+        with tarfile.open(out_path, "w:gz") as tf:
+            for p in files:
+                rel = p.relative_to(paths.claude_dir)
+                tf.add(str(p), arcname=str(rel))
+                manifest["files"].append(
+                    {
+                        "path": str(rel),
+                        "bytes": p.stat().st_size,
+                        "sha256": sha256_file(p),
+                    }
+                )
+
+            # Manifest last
+            mf_bytes = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+            ti = tarfile.TarInfo(name="MANIFEST.json")
+            ti.size = len(mf_bytes)
+            ti.mtime = int(datetime.now(timezone.utc).timestamp())
+            tf.addfile(ti, fileobj=io.BytesIO(mf_bytes))  # type: ignore[name-defined]
+    except Exception as e:
+        return {"ok": False, "error": f"export_failed:{type(e).__name__}", "detail": str(e)}
+
+    return {
+        "ok": True,
+        "action": "export",
+        "bundle": str(out_path),
+        "bundle_sha256": sha256_file(out_path),
+        "files": manifest["files"],
+        "timestamp": now_iso(),
+    }
+
+
+def import_bundle(
+    paths: MemoryPaths,
+    bundle_path: Path,
+    overwrite_pinned: bool,
+    recent_notes: int,
+    rebuild: bool,
+) -> Dict[str, Any]:
+    ensure_dirs(paths)
+
+    bundle_path = bundle_path.expanduser().resolve()
+    if not bundle_path.exists():
+        return {"ok": False, "error": "bundle_not_found", "bundle": str(bundle_path)}
+
+    with tempfile.TemporaryDirectory(prefix="nexus_mem_import_") as td:
+        tmp = Path(td)
+        manifest: Optional[Dict[str, Any]] = None
+
+        try:
+            with tarfile.open(bundle_path, "r:gz") as tf:
+                members = tar_safe_members(tf)
+                # Read manifest if present.
+                try:
+                    mf = tf.extractfile("MANIFEST.json")
+                except Exception:
+                    mf = None
+                if mf:
+                    try:
+                        manifest = json.loads(mf.read().decode("utf-8", errors="replace"))
+                    except Exception:
+                        manifest = None
+
+                for m in members:
+                    if m.name == "MANIFEST.json":
+                        continue
+                    tf.extract(m, path=tmp)
+        except Exception as e:
+            return {"ok": False, "error": f"import_failed:{type(e).__name__}", "detail": str(e)}
+
+        imported: Dict[str, Any] = {"ok": True, "action": "import", "bundle": str(bundle_path), "timestamp": now_iso()}
+
+        # Pinned
+        src_pinned = tmp / "memory" / "pinned.md"
+        if src_pinned.exists() and src_pinned.is_file():
+            if overwrite_pinned or not paths.pinned.exists():
+                paths.pinned.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_pinned, paths.pinned)
+                imported["pinned"] = {"copied": True}
+            else:
+                imported["pinned"] = {"copied": False, "reason": "exists"}
+        if not paths.pinned.exists():
+            ensure_pinned(paths)
+
+        # Notes (dedupe by id)
+        src_notes = tmp / "memory" / "notes.jsonl"
+        added = 0
+        skipped = 0
+        if src_notes.exists() and src_notes.is_file():
+            existing_ids: set[str] = set()
+            for n in iter_jsonl(paths.notes_jsonl):
+                nid = str(n.get("id") or "")
+                if nid:
+                    existing_ids.add(nid)
+
+            for n in iter_jsonl(src_notes):
+                nid = str(n.get("id") or "")
+                if not nid:
+                    nid = hashlib.md5(f"{n.get('category','note')}:{n.get('text','')}".encode("utf-8", errors="replace")).hexdigest()[:12]
+                    n["id"] = nid
+                if nid in existing_ids:
+                    skipped += 1
+                    continue
+                append_jsonl(paths.notes_jsonl, n)
+                existing_ids.add(nid)
+                added += 1
+
+        imported["notes"] = {"added": added, "skipped": skipped}
+
+        # Archives snapshots (optional in bundle)
+        src_archives = tmp / "memory" / "archives"
+        copied_archives = 0
+        if src_archives.exists() and src_archives.is_dir():
+            for fp in sorted(src_archives.glob("memory_bank_*.md")):
+                if not fp.is_file():
+                    continue
+                dest = paths.archives_dir / fp.name
+                if dest.exists():
+                    # Avoid overwrite; keep both.
+                    stem = dest.stem
+                    suffix = dest.suffix
+                    dest = paths.archives_dir / f"{stem}_imported{suffix}"
+                shutil.copy2(fp, dest)
+                copied_archives += 1
+        if copied_archives:
+            imported["archives"] = {"copied": copied_archives}
+
+        # Restore archives index if provided (we keep local index and append imported one as a section).
+        src_index = tmp / "memory" / "archives" / "INDEX.md"
+        if src_index.exists() and src_index.is_file():
+            try:
+                imported_index = src_index.read_text(encoding="utf-8", errors="replace").strip()
+            except Exception:
+                imported_index = ""
+            if imported_index:
+                with paths.archives_index.open("a", encoding="utf-8") as f:
+                    f.write("\n\n---\n\n")
+                    f.write(f"_Imported from bundle: {bundle_path.name} at {now_iso()}_\n\n")
+                    # Keep it compact: include only the Entries section if present.
+                    if "## Entries" in imported_index:
+                        f.write(imported_index.split("## Entries", 1)[-1].strip() + "\n")
+                    else:
+                        f.write(imported_index + "\n")
+
+        if manifest is not None:
+            imported["manifest"] = {"present": True}
+
+        rebuilt = rebuild_memory_bank(paths, recent_notes=recent_notes) if rebuild else None
+        imported["rebuilt"] = rebuilt
+        return imported
 
 
 def load_recent_notes(paths: MemoryPaths, limit: int) -> List[Dict[str, Any]]:
@@ -533,6 +959,30 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p_search.add_argument("query", nargs=argparse.REMAINDER)
     p_search.set_defaults(_fn="search")
 
+    p_hook = sub.add_parser(
+        "remember-hook",
+        help="Read a Claude Code hook event JSON from stdin and append an error note if the tool failed",
+    )
+    p_hook.add_argument("--tags", default="", help="Comma-separated additional tags")
+    p_hook.add_argument("--scope", choices=["global", "project"], default="global")
+    p_hook.add_argument("--recent", type=int, default=DEFAULT_RECENT_NOTES)
+    p_hook.add_argument("--no-rebuild", action="store_true", help="Append note only; skip rebuilding memory_bank")
+    p_hook.set_defaults(_fn="remember_hook")
+
+    p_export = sub.add_parser("export", help="Export memory bundle (tar.gz) for moving to another machine")
+    p_export.add_argument("--out", default="", help="Output bundle path (default: ~/.claude/memory/exports/...)")
+    p_export.add_argument("--with-archives", action="store_true", help="Include archive snapshots (memory_bank_*.md)")
+    p_export.add_argument("--with-state", action="store_true", help="Include selected ~/.claude/state files")
+    p_export.add_argument("--recent", type=int, default=DEFAULT_RECENT_NOTES, help="Recent notes count used for rebuild")
+    p_export.set_defaults(_fn="export")
+
+    p_import = sub.add_parser("import", help="Import memory bundle (tar.gz) into current Claude dir")
+    p_import.add_argument("--overwrite-pinned", action="store_true", help="Overwrite existing pinned.md")
+    p_import.add_argument("--recent", type=int, default=DEFAULT_RECENT_NOTES)
+    p_import.add_argument("--no-rebuild", action="store_true", help="Import only; skip rebuilding memory_bank")
+    p_import.add_argument("bundle", help="Path to a bundle created by `nexus_mem export`")
+    p_import.set_defaults(_fn="import")
+
     return ap.parse_args(list(argv))
 
 
@@ -591,6 +1041,61 @@ def main(argv: Sequence[str]) -> int:
                 include_project=not bool(args.no_project),
             )
             out = search(q, s_paths, max_results=int(args.max_results), use_rg=not bool(args.no_rg))
+            print(json_dumps(out))
+            return 0 if out.get("ok") else 2
+
+        if args._fn == "remember_hook":
+            event, meta = read_stdin_json()
+            tags = [t for t in (args.tags.split(",") if args.tags else []) if t.strip()]
+            if not event:
+                out = {
+                    "ok": True,
+                    "action": "noop",
+                    "reason": meta.get("error") or "empty_stdin",
+                    "stdin_meta": meta,
+                    "timestamp": now_iso(),
+                }
+                print(json_dumps(out))
+                return 0
+            out = remember_from_hook(
+                paths,
+                event=event,
+                additional_tags=tags,
+                scope=str(args.scope),
+                recent_notes=int(args.recent),
+                rebuild=not bool(args.no_rebuild),
+            )
+            out["stdin_meta"] = meta
+            print(json_dumps(out))
+            return 0
+
+        if args._fn == "export":
+            out_arg = str(args.out or "").strip()
+            if out_arg:
+                out_path = Path(out_arg)
+            else:
+                ensure_dirs(paths)
+                exports_dir = paths.memory_dir / "exports"
+                ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                out_path = exports_dir / f"nexus_memory_{ts}.tar.gz"
+            out = export_bundle(
+                paths,
+                out_path=out_path,
+                with_archives=bool(args.with_archives),
+                with_state=bool(args.with_state),
+                recent_notes=int(args.recent),
+            )
+            print(json_dumps(out))
+            return 0 if out.get("ok") else 2
+
+        if args._fn == "import":
+            out = import_bundle(
+                paths,
+                bundle_path=Path(str(args.bundle)),
+                overwrite_pinned=bool(args.overwrite_pinned),
+                recent_notes=int(args.recent),
+                rebuild=not bool(args.no_rebuild),
+            )
             print(json_dumps(out))
             return 0 if out.get("ok") else 2
 

@@ -24,6 +24,7 @@ This plugin upgrades Claude Code memory to be **portable, evidence-friendly, and
 
 ## Hooks
 
+- **PostToolUse**: runs `nexus_mem.py remember-hook --no-rebuild` and appends a short `tool_error` note when a tool fails.
 - **SessionEnd**: runs `nexus_mem.py rotate` to keep `memory_bank.md` compact.
 
 ## Commands
@@ -32,9 +33,10 @@ This plugin upgrades Claude Code memory to be **portable, evidence-friendly, and
 - `nexus-memory-search`
 - `nexus-memory-remember`
 - `nexus-memory-rotate`
+- `nexus-memory-export`
+- `nexus-memory-import`
 
 ## Safety
 
 Do not store secrets in memory:
 - `.env`, `*.pem`, `*.key`, tokens, credentials
-

@@ -25,7 +25,7 @@
         {
             "name": "nexus-memory-pack",
             "description": "Compact hot memory + searchable cold memory: pinned.md + notes.jsonl + memory_bank rotation/archives",
-            "version": "0.1.1",
+            "version": "0.1.2",
             "author": {
                 "name": "turtir-ai",
                 "email": "turtirhey@gmail.com"

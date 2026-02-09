@@ -1,6 +1,16 @@
 {
-  "description": "NEXUS memory hooks: keep memory_bank compact + searchable (rotate on SessionEnd)",
+  "description": "NEXUS memory hooks: keep memory_bank compact + searchable (capture tool failures + rotate on SessionEnd)",
   "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/nexus_mem.py remember-hook --no-rebuild >/dev/null 2>&1 || true"
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
@@ -13,4 +23,3 @@
     ]
   }
 }
-

@@ -1,6 +1,6 @@
 {
   "name": "nexus-memory-pack",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "NEXUS memory pack: compact hot memory + searchable cold memory + memory_bank rotation/archives",
   "author": {
     "name": "turtir-ai",
