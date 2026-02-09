@@ -1,6 +1,6 @@
 {
   "name": "nexus-core",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "NEXUS core: deterministic quality-first Claude Code plugin (session context + quality gate + incidents/fix queue + task metrics + pattern learning)",
   "author": {
     "name": "turtir-ai",
