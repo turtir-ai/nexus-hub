@@ -13,7 +13,7 @@ Hook-driven, deterministic scaffolding:
 - **SessionStart**
   - records a session event + plugin runtime location
   - refreshes a lightweight mental-model scan (throttled)
-  - injects a strict “Codex-grade” additional context to reduce weak-model drift
+  - injects a strict "Codex-grade" additional context to reduce weak-model drift
 - **PreToolUse**
   - `preflight_gate.py` blocks obviously broken `Write` operations (`.py`/`.json`/`.toml` parse failures)
   - `audit_logger.py` logs raw hook payloads for debugging/evidence
@@ -54,7 +54,7 @@ jq '.hooks = {}' ~/.claude/settings.json > ~/.claude/settings.json.tmp && mv ~/.
 ### 4) Restart Claude Code
 Claude Code plugin updates and hook registration require a restart to fully apply.
 
-## Verify It’s Working
+## Verify It's Working
 
 ### Plugin Validation
 ```bash

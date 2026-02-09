@@ -55,7 +55,7 @@ python3 <nexus-core-root>/nexus_state_bundle.py import /path/to/bundle.tar.gz
 The plugin writes its runtime location here to help commands find it:
 - `~/.claude/state/nexus_plugin_runtime.json`
 
-## Debugging Why Hooks Don’t Fire
+## Debugging Why Hooks Don't Fire
 
 - Ensure the plugin is enabled:
 ```bash
@@ -64,4 +64,3 @@ claude plugin list
 
 - Ensure you are not double-running hooks from `~/.claude/settings.json` (legacy).
 - Use `~/.claude/logs/audit.jsonl` to confirm hook events are being received.
-

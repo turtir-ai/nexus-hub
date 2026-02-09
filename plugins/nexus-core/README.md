@@ -1,4 +1,4 @@
-# nexus-core (NEXUS) — Claude Code Plugin
+# nexus-core (NEXUS) - Claude Code Plugin
 
 Deterministic, hook-driven quality + state scaffold for Claude Code.
 
@@ -7,7 +7,7 @@ Deterministic, hook-driven quality + state scaffold for Claude Code.
 ### SessionStart
 - records session start event
 - refreshes mental model scan (throttled)
-- injects strict “Codex-grade” additional context
+- injects strict "Codex-grade" additional context
 - writes runtime location to: `~/.claude/state/nexus_plugin_runtime.json`
 
 ### PreToolUse

@@ -1,4 +1,4 @@
-# NEXUS HUB (Next) — Device-Sync Memory + Skills/MCP via Claude Code Plugins
+# NEXUS HUB (Next) - Device-Sync Memory + Skills/MCP via Claude Code Plugins
 
 ## Why This Exists
 You already have a working local core:
@@ -18,9 +18,9 @@ Claude Code supports:
 - A plugin marketplace mechanism (install/update via configured marketplaces)
 - MCP server configuration via JSON files
 
-So: do not invent a new plugin loader unless you’re targeting non-Claude environments.
+So: do not invent a new plugin loader unless you're targeting non-Claude environments.
 
-## Phase 1 (MVP): “NEXUS-as-a-Plugin”
+## Phase 1 (MVP): "NEXUS-as-a-Plugin"
 Deliverable: a plugin repo folder that can be installed locally and produces the same behavior as your current `~/.claude/hooks/*` setup.
 
 ### Proposed plugin structure
@@ -45,7 +45,7 @@ plugin/
 ### Requirements
 - No hard-coded paths (use HOME + project cwd from hook event JSON).
 - Hooks must never crash on missing keys (store raw payload).
-- “Finding” outputs must be evidence-based (no HTTP-200-only conclusions).
+- "Finding" outputs must be evidence-based (no HTTP-200-only conclusions).
 
 ## Phase 2 (MVP+): Sync-Ready Event Log (Offline First)
 Before building a backend, normalize local state into an append-only event log:
@@ -75,7 +75,6 @@ Privacy:
 ## Immediate Next Task (This Week)
 1) Create `plugin/` scaffolding and a minimal `plugin.json`.
 2) Port the existing hook scripts into `plugin/hooks/` without behavior changes.
-3) Add “evidence gate” checks to prevent false positives in any security validation output.
+3) Add "evidence gate" checks to prevent false positives in any security validation output.
 4) Add a small test harness under `plugin/tests/` that pipes sample hook JSON into scripts.
 5) Write `plugin/README.md` with install steps (macOS focused).
-
